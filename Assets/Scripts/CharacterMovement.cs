@@ -1,5 +1,7 @@
 using UnityEngine;
 using Cinemachine;
+using System.Threading;
+using System.Collections;
 
 [RequireComponent(typeof(Rigidbody))] // Ensures that a Rigidbody component is attached to the GameObject
 public class CharacterMovement : MonoBehaviour
@@ -12,7 +14,8 @@ public class CharacterMovement : MonoBehaviour
 
     // ============================== Jump Settings =================================
     [Header("Jump Settings")]
-    [SerializeField] private float jumpForce = 5f;        // Jump force applied to the character
+    [SerializeField] public float jumpForce = 5f;       // Jump force applied to the character
+    [SerializeField] private float doubleJumpForce = 7f;   // Higher force for second jump
     [SerializeField] private float groundCheckDistance = 1.1f; // Distance to check for ground contact (Raycast)
 
     // ============================== Modifiable from other scripts ==================
@@ -20,7 +23,13 @@ public class CharacterMovement : MonoBehaviour
 
     // ============================== Private Variables ==============================
     private Rigidbody rb; // Reference to the Rigidbody component
+    private Animator animator;
     private Transform cameraTransform; // Reference to the camera's transform
+    private int count = 0;
+
+    private float health = 0;
+    private PlayerHealth playerHealth;
+
 
     // Input variables
     private float moveX; // Stores horizontal movement input (A/D or Left/Right Arrow)
@@ -28,17 +37,29 @@ public class CharacterMovement : MonoBehaviour
     private bool jumpRequest; // Flag to check if the player requested a jump
     private Vector3 moveDirection; // Stores the calculated movement direction
 
+ // ============================== Power-up Flags ==============================
+    private bool canDoubleJump = false;
+    private int jumpCount = 0;
+    private bool hasFlipped = false;
+    public AudioSource src;
+    public AudioClip jumpFx;
+
     // ============================== Animation Variables ==============================
     [Header("Anim values")]
     public float groundSpeed; // Speed value used for animations
+
+    public GameObject myGameObject;
+    public string doubleJump = "JumpBoost";
+    public string speedBoost = "SpeedBoost";
+    public string points = "Points";
 
     // ============================== Character State Properties ==============================
     /// <summary>
     /// Checks if the character is currently grounded using a Raycast.
     /// If false, the character is in the air.
     /// </summary>
-    public bool IsGrounded => 
-        Physics.Raycast(transform.position + Vector3.up * 0.1f, Vector3.down, groundCheckDistance);
+    public bool IsGrounded =>
+        Physics.Raycast(transform.position + Vector3.up * 0.05f, Vector3.down, groundCheckDistance);
 
     /// <summary>
     /// Checks if the player is currently holding the "Run" button.
@@ -52,7 +73,17 @@ public class CharacterMovement : MonoBehaviour
     /// </summary>
     private void Awake()
     {
-        InitializeComponents(); // Initialize Rigidbody and Camera reference
+        rb = GetComponent<Rigidbody>();
+        rb.freezeRotation = true;
+        rb.interpolation = RigidbodyInterpolation.Interpolate;
+
+        animator = GetComponent<Animator>();
+
+        if (Camera.main)
+            cameraTransform = Camera.main.transform;
+        
+        Cursor.lockState = CursorLockMode.Confined;
+        Cursor.visible = false;
     }
 
     /// <summary>
@@ -61,6 +92,7 @@ public class CharacterMovement : MonoBehaviour
     private void Update()
     {
         RegisterInput(); // Collect player input
+
     }
 
     /// <summary>
@@ -105,7 +137,7 @@ public class CharacterMovement : MonoBehaviour
         // Register a jump request if the player presses the Jump button
         if (Input.GetButtonDown("Jump"))
         {
-            jumpRequest = true;
+            HandleJump();
         }
     }
 
@@ -117,9 +149,10 @@ public class CharacterMovement : MonoBehaviour
     private void HandleMovement()
     {
         CalculateMoveDirection(); // Compute the movement direction based on input
-        HandleJump(); // Process jump input
         RotateCharacter(); // Rotate the character towards the movement direction
         MoveCharacter(); // Move the character using velocity-based movement
+        
+
     }
 
     /// <summary>
@@ -156,13 +189,31 @@ public class CharacterMovement : MonoBehaviour
     /// </summary>
     private void HandleJump()
     {
-        // Apply jump force only if jump was requested and the character is grounded
-        if (jumpRequest && IsGrounded)
+        if (IsGrounded)
         {
-            rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse); // Apply force upwards
-            jumpRequest = false; // Reset jump request after applying jump
+            // First jump
+            rb.velocity = new Vector3(rb.velocity.x, jumpForce, rb.velocity.z);
+            animator.SetTrigger("Jump");
+            jumpCount = 1;
+        }
+        else if (jumpCount == 1 && canDoubleJump) // Allow second jump if power-up is active
+        {
+            rb.velocity = new Vector3(rb.velocity.x, doubleJumpForce, rb.velocity.z);
+            src.clip = jumpFx;
+            src.Play();
+
+            if (!hasFlipped)
+            {
+                animator.SetTrigger("doFlip");
+                hasFlipped = true;
+            }
+
+            jumpCount++; // Prevent further jumps
         }
     }
+
+    
+    
 
     /// <summary>
     /// Rotates the character towards the movement direction.
@@ -185,13 +236,13 @@ public class CharacterMovement : MonoBehaviour
     {
         // Determine movement speed (walking or running)
         float speed = IsRunning ? baseRunSpeed : baseWalkSpeed;
-        
+
         // Set ground speed value for animation purposes
         groundSpeed = (moveDirection != Vector3.zero) ? speed : 0.0f;
 
         // Preserve the current Y velocity to maintain gravity effects
         Vector3 newVelocity = new Vector3(
-            moveDirection.x * speed * speedMultiplier, 
+            moveDirection.x * speed * speedMultiplier,
             rb.velocity.y, // Keep the existing Y velocity for jumping & gravity
             moveDirection.z * speed * speedMultiplier
         );
@@ -199,4 +250,63 @@ public class CharacterMovement : MonoBehaviour
         // Apply the new velocity directly
         rb.velocity = newVelocity;
     }
+
+    
+
+    private void OnTriggerEnter(Collider other)
+        {
+            // Check if the colliding object has the specified tag (optional)
+            if (other.gameObject.CompareTag(doubleJump))
+            {
+                canDoubleJump = true;  // Enable double jump
+                Debug.Log("Double jump enabled!");
+                StartCoroutine(DisableDoubleJumpAfterDelay(5f)); // Disable after 5 seconds
+
+            }
+
+            if (other.gameObject.CompareTag(speedBoost))
+            {
+                baseWalkSpeed += 3;
+                baseRunSpeed += 3;
+                Debug.Log("speed has increased");
+
+                StartCoroutine(ResetSpeedAfterDelay(5f));
+                
+            }
+
+            if (other.gameObject.CompareTag(points))
+            {
+                count += 50;
+
+            }
+            
+        }
+
+        private IEnumerator ResetSpeedAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        baseWalkSpeed -= 3; // Reset walk speed
+        baseRunSpeed -= 3;  // Reset run speed
+        Debug.Log("Speed boost expired. Speed reset.");
+    }
+
+    private IEnumerator DisableDoubleJumpAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        canDoubleJump = false;  // Disable double jump after time
+        Debug.Log("Double jump disabled.");
+    }
+
+
+    public void GotHit()
+    {
+        if (playerHealth != null)
+        {
+            playerHealth.TakeDamage(3);
+            animator.SetTrigger("GotHit");
+            
+        }
+    }
+
 }
+
